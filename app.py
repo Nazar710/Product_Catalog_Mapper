@@ -1,4 +1,23 @@
 
+"""
+Streamlit Web Application for Human-in-the-Loop Catalog Mapping.
+
+This application provides an interactive web interface for mapping IKEA taxonomy
+to retailer product catalogs using TF-IDF similarity matching with human oversight.
+
+Key Features:
+- Upload IKEA taxonomy and retailer catalog Excel files
+- Configure mapping parameters (similarity thresholds, URL verification)
+- Review and edit mapping results with real-time feedback
+- Export edited results and create override rules
+- Support for synonyms and custom mapping overrides
+
+The app uses session state to preserve user edits and supports multiple
+editing modes (checkbox vs direct input) for human labeling.
+
+Author: Evgeny Nazarenko
+"""
+
 import json
 from pathlib import Path
 import streamlit as st
@@ -252,6 +271,23 @@ if st.session_state.mapping_results is not None:
         """)
 
     def to_xlsx_bytes(df: pd.DataFrame) -> bytes:
+        """
+        Convert a pandas DataFrame to Excel file bytes for download.
+        
+        Creates an in-memory Excel file from the DataFrame using xlsxwriter engine
+        and returns the binary content for Streamlit download functionality.
+        
+        Args:
+            df (pd.DataFrame): DataFrame to convert to Excel format
+            
+        Returns:
+            bytes: Binary content of the Excel file ready for download
+            
+        Example:
+            >>> df = pd.DataFrame({'A': [1, 2], 'B': [3, 4]})
+            >>> excel_bytes = to_xlsx_bytes(df)
+            >>> st.download_button("Download", excel_bytes, "file.xlsx")
+        """
         import io
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
