@@ -1,0 +1,12 @@
+shop all
+collections
+new
+sale
+offers
+furniture
+living room
+bedroom
+dining room
+seating
+all sofas
+all furniture

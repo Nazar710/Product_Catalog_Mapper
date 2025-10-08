@@ -1,0 +1,94 @@
+{
+  "wardrobes": [
+    "armoires",
+    "closets"
+  ],
+  "sofas": [
+    "couches",
+    "settees"
+  ],
+  "armchairs": [
+    "accent chairs",
+    "occasional chairs"
+  ],
+  "footstools": [
+    "ottomans",
+    "poufs",
+    "pouffes"
+  ],
+  "sofa beds": [
+    "sleepers",
+    "sofabeds"
+  ],
+  "corner sofas": [
+    "sectionals",
+    "modular sofas"
+  ],
+  "tv stands": [
+    "media consoles",
+    "entertainment centers",
+    "tv units"
+  ],
+  "sideboards": [
+    "buffets",
+    "credenzas"
+  ],
+  "bookcases": [
+    "bookshelves"
+  ],
+  "chests of drawers": [
+    "dressers"
+  ],
+  "bedside tables": [
+    "nightstands"
+  ],
+  "dining tables": [
+    "tables (dining)"
+  ],
+  "dining chairs": [
+    "chairs (dining)"
+  ],
+  "bar stools": [
+    "counter stools"
+  ],
+  "rugs": [
+    "carpets",
+    "runners"
+  ],
+  "curtains": [
+    "drapes"
+  ],
+  "blinds": [
+    "shades"
+  ],
+  "duvet covers": [
+    "quilts",
+    "coverlets"
+  ],
+  "comforters": [
+    "duvets",
+    "duvet inserts",
+    "duvet fill"
+  ],
+  "sheet sets": [
+    "sheets & pillowcases",
+    "sheets and pillowcases"
+  ],
+  "throws": [
+    "blankets"
+  ],
+  "table lamps": [
+    "desk lamps",
+    "desk/table lamps"
+  ],
+  "floor lamps": [
+    "standard lamps"
+  ],
+  "wall lamps": [
+    "sconces"
+  ],
+  "ceiling lamps": [
+    "pendants",
+    "chandeliers"
+  ]
+}
