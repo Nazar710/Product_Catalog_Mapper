@@ -42,6 +42,27 @@ with st.sidebar:
     retailer_name = st.text_input("Retailer name", value="Retailer")
     retailer_domain = st.text_input("Retailer domain (for relative URLs)", value="")
 
+    # Scoring method selection
+    try:
+        from sentence_transformers import SentenceTransformer
+        embeddings_available = True
+    except ImportError:
+        embeddings_available = False
+    
+    if embeddings_available:
+        scoring_method = st.selectbox(
+            "Scoring Method",
+            options=["tfidf", "embeddings"],
+            format_func=lambda x: {
+                "tfidf": "🔤 TF-IDF (Fast, good for simple catalogs)",
+                "embeddings": "🧠 Semantic Embeddings (Slower, better for complex catalogs)"
+            }[x],
+            help="TF-IDF: Fast keyword matching. Embeddings: Understands synonyms and context."
+        )
+    else:
+        scoring_method = "tfidf"
+        st.info("💡 Install `sentence-transformers` to enable semantic embeddings: `pip install sentence-transformers`")
+
     ratio = st.slider("One‑to‑many ratio (≥ best ×)", 0.5, 1.0, 0.90, 0.05)
     min_score = st.slider("Min candidate score", 0.0, 1.0, 0.30, 0.05)
     min_keep = st.slider("Min keep score (best)", 0.0, 1.0, 0.25, 0.05)
@@ -106,6 +127,7 @@ if run:
         min_score=min_score,
         min_keep=min_keep,
         verify_urls=verify,
+        scoring_method=scoring_method,
     )
 
     mapper = CatalogMapper(cfg, synonyms=synonyms, overrides=overrides, generic_blacklist=generic_blacklist)

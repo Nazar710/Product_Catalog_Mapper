@@ -19,6 +19,12 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import httpx
 
+try:
+    from sentence_transformers import SentenceTransformer
+    EMBEDDINGS_AVAILABLE = True
+except ImportError:
+    EMBEDDINGS_AVAILABLE = False
+
 # Generic terms that should be filtered out as they don't provide meaningful mapping signals
 GENERIC_TERMS = {
     "shop all", "collections", "new", "sale", "offers", "furniture",
@@ -38,6 +44,7 @@ class MapperConfig:
         min_keep (float): Minimum score threshold for keeping the best match (0.25 = 25% similarity)
         verify_urls (bool): Whether to verify URLs are accessible via HTTP requests
         request_timeout (float): Timeout in seconds for HTTP requests
+        scoring_method (str): Scoring method to use - 'tfidf' or 'embeddings'
     """
     retailer_name: str
     retailer_domain: Optional[str] = None
@@ -46,6 +53,7 @@ class MapperConfig:
     min_keep: float = 0.25
     verify_urls: bool = False
     request_timeout: float = 6.0
+    scoring_method: str = 'tfidf'
 
 def norm_text(s: str) -> str:
     """
@@ -274,6 +282,13 @@ class CatalogMapper:
         self.room_gate = (self.overrides.get("room_gate") or {})
         self.domain = self.overrides.get("domain") or self.cfg.retailer_domain
         self.generic_terms = set([norm_text(x) for x in (generic_blacklist or [])]) | GENERIC_TERMS
+        
+        # Initialize embedding model if needed
+        self.embedding_model = None
+        if self.cfg.scoring_method == 'embeddings':
+            if not EMBEDDINGS_AVAILABLE:
+                raise ImportError("sentence-transformers is required for embeddings scoring. Install with: pip install sentence-transformers")
+            self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
     def _prepare_retailer(self, df_retail: pd.DataFrame) -> pd.DataFrame:
         """
@@ -299,18 +314,23 @@ class CatalogMapper:
 
     def _vectorize(self, ret_docs: pd.Series):
         """
-        Create TF-IDF vectorizer and transform retailer documents.
-        Uses 1-2 gram features with minimum document frequency of 1.
+        Create vectorizer and transform retailer documents using chosen scoring method.
         
         Args:
             ret_docs (pd.Series): Normalized retailer document strings
             
         Returns:
-            Tuple[TfidfVectorizer, sparse matrix]: Fitted vectorizer and document vectors
+            Tuple[object, ndarray]: Fitted vectorizer/model and document vectors
         """
-        vec = TfidfVectorizer(ngram_range=(1, 2), min_df=1)
-        X = vec.fit_transform(ret_docs)
-        return vec, X
+        if self.cfg.scoring_method == 'embeddings':
+            # Use semantic embeddings
+            embeddings = self.embedding_model.encode(ret_docs.tolist())
+            return self.embedding_model, embeddings
+        else:
+            # Use TF-IDF (default)
+            vec = TfidfVectorizer(ngram_range=(1, 2), min_df=1)
+            X = vec.fit_transform(ret_docs)
+            return vec, X
 
     def _gate_mask(self, ret_docs: pd.Series, room: str) -> np.ndarray:
         """
@@ -410,8 +430,16 @@ class CatalogMapper:
                 continue
 
             ikea_doc = build_docs_ikea(row, self.synonyms)
-            qv = vec.transform([ikea_doc])
-            sims = cosine_similarity(qv, Xret)[0]
+            
+            if self.cfg.scoring_method == 'embeddings':
+                # Use semantic embeddings
+                ikea_embedding = vec.encode([ikea_doc])
+                sims = cosine_similarity(ikea_embedding, Xret)[0]
+            else:
+                # Use TF-IDF
+                qv = vec.transform([ikea_doc])
+                sims = cosine_similarity(qv, Xret)[0]
+                
             sims_masked = np.full_like(sims, -1.0)
             sims_masked[cand_idx] = sims[cand_idx]
 
