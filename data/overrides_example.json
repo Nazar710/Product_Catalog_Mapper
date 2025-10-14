@@ -1,24 +1,7 @@
 {
-  "retailer": "dfs",
-  "domain": "https://www.dfs.co.uk",
+  "retailer": "",
+  "domain": "",
   "leaf_overrides": {
-    "sofas": {
-      "catalog_path": "Sofas",
-      "url": "https://www.dfs.co.uk/sofas"
-    },
-    "sofa beds": {
-      "catalog_path": "Sofa Bed",
-      "url": "https://www.dfs.co.uk/sofa-beds"
-    },
-    "corner sofas": {
-      "catalog_path": "Corner Sofas"
-    },
-    "recliners": {
-      "catalog_path": "Recliners"
-    },
-    "tv units": {
-      "catalog_path": "TV Units"
-    }
   },
   "room_gate": {
     "living": [

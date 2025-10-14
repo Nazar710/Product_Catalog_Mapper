@@ -398,7 +398,14 @@ class CatalogMapper:
         retail = self._prepare_retailer(retail_df)
         vec, Xret = self._vectorize(retail["doc_norm"])
 
-        leaf_over = {k.lower(): v for k, v in (self.overrides.get("leaf_overrides") or {}).items()}
+        # Only apply leaf overrides if they match the current retailer or are generic (no retailer specified)
+        override_retailer = self.overrides.get("retailer", "").lower()
+        current_retailer = self.cfg.retailer_name.lower()
+        
+        if not override_retailer or override_retailer == current_retailer:
+            leaf_over = {k.lower(): v for k, v in (self.overrides.get("leaf_overrides") or {}).items()}
+        else:
+            leaf_over = {}  # Don't apply retailer-specific overrides for different retailers
 
         prev_path_col = f"{self.cfg.retailer_name}_catalog_path"
         prev_url_col  = f"{self.cfg.retailer_name}_url"
