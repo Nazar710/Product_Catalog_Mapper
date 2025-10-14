@@ -178,9 +178,9 @@ if st.session_state.mapping_results is not None:
     
     # Add instruction based on mode
     if "Checkbox" in edit_mode:
-        st.info("📝 **Checkbox Mode**: Click checkboxes to approve (✓) or reject ( ) mappings. Changes save automatically.")
+        st.info("📝 **Excel-like Editing**: ✓ **Checkboxes** to approve/reject mappings • **Double-click** catalog paths and URLs to edit • Changes save automatically")
     else:
-        st.info("📝 **Direct Input Mode**: Type `1` to approve or `0` to reject, then press Enter. Changes save automatically.")
+        st.info("📝 **Excel-like Editing**: **Type** `1`/`0` to approve/reject • **Double-click** catalog paths and URLs to edit • Press **Enter** to save changes")
     
     # Ensure human_label column exists and is the right type
     if 'human_label' not in result.columns:
@@ -196,7 +196,7 @@ if st.session_state.mapping_results is not None:
                 width="small",
             )
         }
-        st.caption("☑️ Check boxes to approve mappings, leave unchecked to reject.")
+        st.caption("☑️ **Approve/Reject**: Check boxes • **Edit Paths/URLs**: Double-click cells • **Auto-save**: Changes persist automatically")
     else:
         result['human_label'] = result['human_label'].astype(int)
         column_config = {
@@ -210,15 +210,26 @@ if st.session_state.mapping_results is not None:
                 format="%d"
             )
         }
-        st.caption("💻 Type 1 to approve, 0 to reject. Press Enter to save each change.")
+        st.caption("💻 **Approve/Reject**: Type 1/0 • **Edit Paths/URLs**: Double-click cells • **Save**: Press Enter")
     
-    # Create list of columns to disable (all except human_label)
-    disabled_columns = [col for col in result.columns if col != 'human_label']
+    # Make key columns editable like Excel - allow editing catalog path, URL, and human label
+    editable_columns = ['human_label']
+    
+    # Find the retailer-specific columns dynamically
+    retailer_path_col = f"{retailer_name}_catalog_path"
+    retailer_url_col = f"{retailer_name}_url"
+    
+    if retailer_path_col in result.columns:
+        editable_columns.append(retailer_path_col)
+    if retailer_url_col in result.columns:
+        editable_columns.append(retailer_url_col)
+    
+    # Create list of columns to disable (all except editable ones)
+    disabled_columns = [col for col in result.columns if col not in editable_columns]
     
     # Hide less important columns for cleaner interface
     columns_to_hide = ['matched_tokens', '_method'] if len(result.columns) > 8 else []
     
-    # Use data_editor for interactive editing
     # Use edited results from session state if available, otherwise use original
     if st.session_state.edited_results is not None:
         data_to_edit = st.session_state.edited_results.copy()
@@ -231,6 +242,21 @@ if st.session_state.mapping_results is not None:
                 data_to_edit['human_label'] = data_to_edit['human_label'].astype(int)
     else:
         data_to_edit = result.copy()
+    
+    # Enhanced column configuration for better editing experience
+    if retailer_path_col in data_to_edit.columns:
+        column_config[retailer_path_col] = st.column_config.TextColumn(
+            "📁 Catalog Path",
+            help="Edit the retailer catalog path - double-click to modify",
+            width="medium"
+        )
+    
+    if retailer_url_col in data_to_edit.columns:
+        column_config[retailer_url_col] = st.column_config.LinkColumn(
+            "🔗 URL", 
+            help="Edit the retailer URL - double-click to modify",
+            width="medium"
+        )
     
     # Create a stable key that doesn't change with mode switches
     editor_key = "mapping_editor_stable"
@@ -278,18 +304,23 @@ if st.session_state.mapping_results is not None:
     st.divider()
     
     # Instructions
-    with st.expander("ℹ️ How to edit human labels", expanded=False):
+    with st.expander("📚 Excel-like Editing Guide", expanded=False):
         st.markdown("""
-        **Editing Instructions:**
-        1. **Click** on any cell in the 'Human Label' column
-        2. **Type** `1` to approve the mapping or `0` to reject it
-        3. **Press Enter** or click outside the cell to save the change
-        4. The summary above updates automatically
-        5. Use the download button below to save your edited results
+        **🎯 Main Editing (Excel-like Experience):**
+        - **Double-click** any cell in 📁 **Catalog Path** to edit retailer category names
+        - **Double-click** any cell in 🔗 **URL** to edit retailer links  
+        - **Click checkboxes** or **type 1/0** in **Human Label** to approve/reject
+        - **Changes save automatically** - no need to click save buttons!
         
-        **Legend:**
-        - `0` = Reject mapping (poor quality/incorrect)
-        - `1` = Approve mapping (good quality/correct)
+        **⚡ Quick Actions:**
+        - **Edit paths**: Fix category names, add missing levels, correct typos
+        - **Edit URLs**: Update broken links, add missing URLs, fix domains
+        - **Approve/Reject**: Mark good matches (✓) vs poor matches (✗)
+        
+        **💡 Pro Tips:**
+        - Edit paths to match your retailer's exact category structure
+        - Add or fix URLs to ensure working links in final output
+        - Use the progress bar to track your review completion
         """)
 
     def to_xlsx_bytes(df: pd.DataFrame) -> bytes:
@@ -364,73 +395,6 @@ if st.session_state.mapping_results is not None:
             reset_result['human_label'] = 0
             st.session_state.edited_results = reset_result
             st.rerun()
-
-    st.divider()
-    st.subheader("Apply feedback → overrides")
-    st.caption("Add deterministic overrides for IKEA categories. This helps improve future mappings.")
-
-    # Create tabs for different override types
-    tab1, tab2 = st.tabs(["🔗 IKEA Category Override", "➕ Add New Mapping"])
-    
-    with tab1:
-        st.markdown("**Override existing IKEA category mapping:**")
-        cc1, cc2 = st.columns(2)
-        with cc1:
-            leaf_in = st.text_input(
-                "IKEA leaf (canonical, e.g., 'sofas')", 
-                help="Enter the IKEA category name (usually L3 level)"
-            )
-            path_in = st.text_input(
-                "Retailer catalog path", 
-                help="Enter the exact retailer category path as it appears"
-            )
-        with cc2:
-            url_in = st.text_input(
-                "Retailer URL (optional)", 
-                help="Full URL to the retailer category page"
-            )
-            save_btn = st.button("💾 Save Category Override")
-
-        if save_btn and leaf_in.strip() and path_in.strip():
-            overrides.setdefault("leaf_overrides", {})[leaf_in.strip().lower()] = {
-                "catalog_path": path_in.strip(),
-                **({"url": url_in.strip()} if url_in.strip() else {})
-            }
-            out_path = DATA_DIR / f"overrides_{retailer_name.lower()}.json"
-            out_path.write_text(json.dumps(overrides, indent=2))
-            st.success(f"✅ Saved category override → {out_path}")
-
-    with tab2:
-        st.markdown("**Add completely new retailer category mapping:**")
-        cc3, cc4 = st.columns(2)
-        with cc3:
-            new_path_in = st.text_input(
-                "New retailer catalog path", 
-                help="Enter any retailer category path that was missed"
-            )
-            new_url_in = st.text_input(
-                "Retailer URL for new path", 
-                help="Full URL to the retailer category page"
-            )
-        with cc4:
-            ikea_match = st.text_input(
-                "Best matching IKEA category", 
-                help="Which IKEA category should this map to?"
-            )
-            add_new_btn = st.button("➕ Add New Mapping")
-
-        if add_new_btn and new_path_in.strip():
-            # Add to a new section for manual additions
-            overrides.setdefault("manual_additions", []).append({
-                "catalog_path": new_path_in.strip(),
-                "url": new_url_in.strip() if new_url_in.strip() else "",
-                "ikea_match": ikea_match.strip() if ikea_match.strip() else "",
-                "added_manually": True
-            })
-            out_path = DATA_DIR / f"overrides_{retailer_name.lower()}.json"
-            out_path.write_text(json.dumps(overrides, indent=2))
-            st.success(f"✅ Added new mapping → {out_path}")
-            st.info("💡 This new path will be included in future mapping runs.")
 
 else:
     st.info("👆 Upload IKEA and Retailer files above, then click 'Run Mapping' to begin.")

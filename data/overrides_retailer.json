@@ -1,31 +1,10 @@
 {
-  "retailer": "dfs",
-  "domain": "https://www.dfs.co.uk",
+  "retailer": "",
+  "domain": "",
   "leaf_overrides": {
     "sofas": {
       "catalog_path": "Sofas",
-      "url": "https://www.dfs.co.uk/sofas"
-    },
-    "sofa beds": {
-      "catalog_path": "Sofa Bed",
-      "url": "https://www.dfs.co.uk/sofa-beds"
-    },
-    "corner sofas": {
-      "catalog_path": "Corner Sofas"
-    },
-    "recliners": {
-      "catalog_path": "Recliners"
-    },
-    "tv units": {
-      "catalog_path": "TV Units"
-    },
-    "outdoor dining tables": {
-      "catalog_path": "Garden & Outdoor > Tables & Chairs",
-      "url": "https://www.homegoodsuk.co.uk/category/garden-tables-chairs"
-    },
-    "outdoor sofas & relax": {
-      "catalog_path": "Garden & Outdoor > Sofa Sets",
-      "url": "https://www.homegoodsuk.co.uk/category/garden-sofas-chairs"
+      "url": "https://www.sofology.co.uk/sofas"
     }
   },
   "room_gate": {
