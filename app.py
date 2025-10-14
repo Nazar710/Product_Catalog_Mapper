@@ -34,6 +34,37 @@ DEFAULT_SYNS = DATA_DIR / "synonyms.json"
 DEFAULT_OVR = DATA_DIR / "overrides_example.json"
 DEFAULT_BL  = DATA_DIR / "generic_blacklist.txt"
 
+def to_xlsx_bytes(df: pd.DataFrame) -> bytes:
+    """
+    Convert a pandas DataFrame to Excel file bytes for download.
+    
+    Creates an in-memory Excel file from the DataFrame using xlsxwriter engine
+    and returns the binary content for Streamlit download functionality.
+    
+    Args:
+        df (pd.DataFrame): DataFrame to convert to Excel format
+        
+    Returns:
+        bytes: Binary content of the Excel file ready for download
+        
+    Example:
+        >>> df = pd.DataFrame({'A': [1, 2], 'B': [3, 4]})
+        >>> excel_bytes = to_xlsx_bytes(df)
+        >>> st.download_button("Download", excel_bytes, "file.xlsx")
+    """
+    import io
+    try:
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+            df.to_excel(writer, index=False, sheet_name="mapping")
+        return output.getvalue()
+    except ImportError:
+        # Fallback to openpyxl if xlsxwriter is not available
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="mapping")
+        return output.getvalue()
+
 st.set_page_config(page_title="Catalog Mapper", layout="wide")
 st.title("🧭 Catalog Mapper — Human‑in‑the‑Loop")
 
@@ -49,19 +80,90 @@ with st.sidebar:
     except ImportError:
         embeddings_available = False
     
+    try:
+        from rank_bm25 import BM25Okapi
+        bm25_available = True
+    except ImportError:
+        bm25_available = False
+    
+    # Build scoring options based on availability
+    scoring_options = ["tfidf", "tfidf_advanced"]
+    scoring_labels = {
+        "tfidf": "🔤 TF-IDF Standard (Fast, reliable)",
+        "tfidf_advanced": "⚡ TF-IDF Advanced (Better phrase matching)",
+    }
+    
+    if bm25_available:
+        scoring_options.append("bm25")
+        scoring_labels["bm25"] = "🎯 BM25 (Best balance: fast + accurate)"
+    
     if embeddings_available:
-        scoring_method = st.selectbox(
-            "Scoring Method",
-            options=["tfidf", "embeddings"],
-            format_func=lambda x: {
-                "tfidf": "🔤 TF-IDF (Fast, good for simple catalogs)",
-                "embeddings": "🧠 Semantic Embeddings (Slower, better for complex catalogs)"
-            }[x],
-            help="TF-IDF: Fast keyword matching. Embeddings: Understands synonyms and context."
-        )
-    else:
-        scoring_method = "tfidf"
-        st.info("💡 Install `sentence-transformers` to enable semantic embeddings: `pip install sentence-transformers`")
+        scoring_options.append("embeddings")
+        scoring_labels["embeddings"] = "🧠 Semantic Embeddings (Slowest, understands meaning)"
+    
+    scoring_method = st.selectbox(
+        "🎛️ Scoring Method",
+        options=scoring_options,
+        index=2 if bm25_available else 1,  # Default to BM25 if available, else TF-IDF Advanced
+        format_func=lambda x: scoring_labels[x],
+        help="Choose scoring method: TF-IDF (fast keyword), BM25 (balanced), Embeddings (semantic understanding)"
+    )
+    
+    # Add recommendations based on selected method
+    if scoring_method == "tfidf":
+        st.info("💡 **TF-IDF Standard**: Perfect for simple catalogs with straightforward category names. Use default weights (1,3,6,2).")
+    elif scoring_method == "tfidf_advanced":
+        st.info("💡 **TF-IDF Advanced**: Great for catalogs with multi-word phrases like 'corner sofa beds'. Good with default weights.")
+    elif scoring_method == "bm25":
+        st.success("🎯 **BM25 Recommended**: Best balance of speed and accuracy. For complex catalogs, try increasing Examples weight to 3-4.")
+    elif scoring_method == "embeddings":
+        st.info("🧠 **Semantic Embeddings**: Best for synonym-heavy catalogs where 'couch' should match 'sofa'. Slower but most intelligent.")
+    
+    # Show installation tips for missing methods
+    missing_methods = []
+    if not bm25_available:
+        missing_methods.append("`pip install rank-bm25` for BM25 scoring")
+    if not embeddings_available:
+        missing_methods.append("`pip install sentence-transformers` for semantic embeddings")
+    
+    if missing_methods:
+        st.info("💡 Install: " + " | ".join(missing_methods))
+
+    # Column weighting controls - always visible
+    st.subheader("⚖️ IKEA Column Weights")
+    st.caption("Control how much weight each IKEA column gets in similarity matching")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        l1_weight = st.number_input("🏢 L1 Weight (Broad categories)", min_value=0, max_value=10, value=1, 
+                                  help="Weight for L1 categories like 'Furniture'")
+        l2_weight = st.number_input("🏷️ L2 Weight (Mid-level)", min_value=0, max_value=10, value=3,
+                                  help="Weight for L2 categories like 'Seating'")
+    
+    with col2:
+        l3_weight = st.number_input("🎯 L3 Weight (Specific)", min_value=0, max_value=10, value=6,
+                                  help="Weight for L3 categories like 'Sofas'")
+        examples_weight = st.number_input("📝 Examples Weight", min_value=0, max_value=10, value=2,
+                                        help="Weight for Examples column terms")
+    
+    st.caption(f"🎯 Current weighting: L1×{l1_weight}, L2×{l2_weight}, L3×{l3_weight}, Examples×{examples_weight}")
+    
+    # Weight recommendations
+    with st.expander("💡 Weight Tuning Tips", expanded=False):
+        st.markdown("""
+        **🎯 When to adjust weights:**
+        - **Increase L3 weight (7-10)**: When specific categories are most important
+        - **Increase Examples weight (3-5)**: When examples contain key matching terms
+        - **Decrease L1 weight (0-1)**: When broad categories cause noise
+        - **Balance L2/L3 (4-6 each)**: When mid-level categories are very descriptive
+        
+        **📊 Quick presets:**
+        - **Precise matching**: L1=0, L2=2, L3=8, Examples=3
+        - **Balanced approach**: L1=1, L2=3, L3=6, Examples=2 (default)
+        - **Example-heavy**: L1=1, L2=2, L3=5, Examples=5
+        """)
+    
+    st.divider()
 
     ratio = st.slider("One‑to‑many ratio (≥ best ×)", 0.5, 1.0, 0.90, 0.05)
     min_score = st.slider("Min candidate score", 0.0, 1.0, 0.30, 0.05)
@@ -89,9 +191,45 @@ with st.sidebar:
 
     if DEFAULT_BL.exists():
         generic_blacklist = [x.strip() for x in DEFAULT_BL.read_text().splitlines() if x.strip()]
-
     else:
         generic_blacklist = []
+        
+    # Experiment mode indicator: Show when data is ready for experimentation
+    # This helps users understand they can now iterate on settings without re-uploading
+    if st.session_state.get('mapping_results') is not None:
+        st.success("🧪 **Experiment Mode**: Change settings above and click 'Re-score' to test!")
+        st.caption(f"📊 Ready to experiment with {len(st.session_state.mapping_results)} existing mappings")
+    
+    # Best practices section
+    with st.expander("🎯 Best Practices & Troubleshooting", expanded=False):
+        st.markdown("""
+        **🚀 For best results:**
+        - Start with BM25 method and default weights
+        - If getting too generic matches, increase L3 weight
+        - If missing obvious matches, increase Examples weight
+        - Use Semantic Embeddings only for catalogs with many synonyms
+        
+        **🔧 Common issues:**
+        - **Too many "Sofas" results**: Decrease L3 weight, increase L2 weight
+        - **Missing specific items**: Increase Examples weight to 4-5
+        - **Generic category matches**: Try Advanced TF-IDF with higher L3 weight
+        - **Weird semantic matches**: Switch to BM25 or Standard TF-IDF
+        
+        **📈 Performance tips:**
+        - Clean your catalog data (remove extra spaces, fix typos)
+        - BM25 works best with varied vocabulary
+        - Semantic embeddings need good internet connection
+        - Test with small batches first
+        """)
+    
+    st.markdown("""
+    **📋 Quick start:**
+    1. Select your retailer catalog type
+    2. Choose scoring method (BM25 recommended for most cases)
+    3. Adjust column weights based on your catalog structure
+    4. Upload your catalog and let the mapper process it
+    5. Edit results in the table and download when satisfied
+    """)
 
 c1, c2 = st.columns(2)
 with c1:
@@ -106,8 +244,22 @@ if 'mapping_config' not in st.session_state:
     st.session_state.mapping_config = None
 if 'edited_results' not in st.session_state:
     st.session_state.edited_results = None
+if 'original_ikea_df' not in st.session_state:
+    st.session_state.original_ikea_df = None
+if 'original_retail_df' not in st.session_state:
+    st.session_state.original_retail_df = None
 
-run = st.button("Run Mapping", type="primary")
+col1, col2 = st.columns([2, 1])
+with col1:
+    run = st.button("Run Mapping", type="primary")
+with col2:
+    # Real-time experimentation: Only show re-score button if we have existing data
+    # This allows users to experiment with different scoring methods and weights
+    # without re-uploading files, enabling rapid iteration and comparison
+    if st.session_state.get('mapping_results') is not None:
+        rescore = st.button("🔄 Re-score with Current Settings", help="Apply new weights/method to existing data")
+    else:
+        rescore = False
 
 if run:
     if not ikea_up or not ret_up:
@@ -117,6 +269,11 @@ if run:
     with st.spinner("Parsing files…"):
         ikea_df = read_ikea_xlsx(ikea_up)
         retail_df = read_retailer_xlsx(ret_up)
+        
+        # Store original dataframes for re-scoring experiments
+        # This enables real-time experimentation without re-uploading files
+        st.session_state.original_ikea_df = ikea_df.copy()
+        st.session_state.original_retail_df = retail_df.copy()
 
     st.success(f"Parsed IKEA rows: {len(ikea_df)} | Retailer rows: {len(retail_df)}")
 
@@ -128,6 +285,10 @@ if run:
         min_keep=min_keep,
         verify_urls=verify,
         scoring_method=scoring_method,
+        l1_weight=l1_weight,
+        l2_weight=l2_weight,
+        l3_weight=l3_weight,
+        examples_weight=examples_weight,
     )
 
     mapper = CatalogMapper(cfg, synonyms=synonyms, overrides=overrides, generic_blacklist=generic_blacklist)
@@ -135,19 +296,77 @@ if run:
     with st.spinner("Scoring and selecting candidates…"):
         result = mapper.map(ikea_df, retail_df)
 
-    # Store results in session state
+    # Store results and configuration in session state for experimentation
+    # This enables users to change settings and re-score without losing data
     st.session_state.mapping_results = result.copy()
     st.session_state.mapping_config = {
         'retailer_name': retailer_name,
         'synonyms': synonyms,
         'overrides': overrides,
-        'generic_blacklist': generic_blacklist
+        'generic_blacklist': generic_blacklist,
+        # Store current scoring settings for display and re-scoring
+        'scoring_method': scoring_method,
+        'l1_weight': l1_weight,
+        'l2_weight': l2_weight,
+        'l3_weight': l3_weight,
+        'examples_weight': examples_weight
     }
+    # Reset edited results since we have new mapping with potentially different settings
+    st.session_state.edited_results = None
 
-    st.success(f"Generated {len(result)} mapped rows (one‑to‑many duplicates included).")
+    st.success(f"✅ Generated {len(result)} mapped rows (one‑to‑many duplicates included).")
+    st.info(f"🎛️ **Applied Settings**: {scoring_method.upper()} scoring • Weights: L1={l1_weight}, L2={l2_weight}, L3={l3_weight}, Examples={examples_weight}")
+
+# Real-time experimentation: Handle re-scoring with new parameters
+# This allows users to experiment with different scoring methods and weights
+# on the same dataset without re-uploading files
+if rescore and st.session_state.mapping_config:
+    if 'original_ikea_df' in st.session_state and 'original_retail_df' in st.session_state:
+        # Get current sidebar configuration
+        current_config = MapperConfig(
+            retailer_name=retailer_name,
+            retailer_domain=retailer_domain,
+            ratio=ratio,
+            min_score=min_score,
+            min_keep=min_keep,
+            verify_urls=verify,
+            scoring_method=scoring_method,
+            l1_weight=l1_weight,
+            l2_weight=l2_weight,
+            l3_weight=l3_weight,
+            examples_weight=examples_weight,
+        )
+        
+        # Use stored original data but current sidebar settings
+        restored_synonyms = st.session_state.mapping_config['synonyms']
+        restored_overrides = st.session_state.mapping_config['overrides']
+        restored_blacklist = st.session_state.mapping_config['generic_blacklist']
+        
+        with st.spinner("🔄 Re-scoring with new settings..."):
+            mapper = CatalogMapper(current_config, synonyms=restored_synonyms, overrides=restored_overrides, generic_blacklist=restored_blacklist)
+            result = mapper.map(st.session_state.original_ikea_df, st.session_state.original_retail_df)
+            
+            # Update results in session state
+            st.session_state.mapping_results = result.copy()
+            # Update configuration with new settings
+            st.session_state.mapping_config.update({
+                'scoring_method': scoring_method,
+                'l1_weight': l1_weight,
+                'l2_weight': l2_weight,
+                'l3_weight': l3_weight,
+                'examples_weight': examples_weight
+            })
+            # Reset edited results since we have new mapping
+            st.session_state.edited_results = None
+            
+            st.success(f"🔄 Re-scored! Generated {len(result)} mapped rows with new settings.")
+            st.info(f"📊 **New Settings Applied**: {scoring_method.upper()} scoring, weights: L1={l1_weight}, L2={l2_weight}, L3={l3_weight}, Examples={examples_weight}")
+    else:
+        st.warning("⚠️ Original data not found. Please re-upload files and run mapping first.")
+        st.info("💡 **Tip**: Upload files and run mapping once, then you can experiment with different settings!")
 
 # Show results if they exist in session state
-if st.session_state.mapping_results is not None:
+if st.session_state.get('mapping_results') is not None:
     result = st.session_state.mapping_results.copy()
     # Restore config from session state
     if st.session_state.mapping_config:
@@ -156,6 +375,13 @@ if st.session_state.mapping_results is not None:
         overrides = st.session_state.mapping_config['overrides']
         generic_blacklist = st.session_state.mapping_config['generic_blacklist']
 
+    # Settings transparency: Show current applied settings prominently
+    # This helps users understand which parameters generated the current results
+    # and confirms when new settings have been applied after experimentation
+    if st.session_state.mapping_config:
+        config = st.session_state.mapping_config
+        st.info(f"🎛️ **Current Settings**: {config.get('scoring_method', 'default').upper()} scoring • Weights: L1={config.get('l1_weight', 1)}, L2={config.get('l2_weight', 3)}, L3={config.get('l3_weight', 6)}, Examples={config.get('examples_weight', 2)}")
+    
     # Add a clear results button
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -258,8 +484,15 @@ if st.session_state.mapping_results is not None:
             width="medium"
         )
     
-    # Create a stable key that doesn't change with mode switches
-    editor_key = "mapping_editor_stable"
+    # Dynamic editor refresh: Create a key that changes when results change
+    # This ensures the data editor shows fresh data when re-mapping with different settings
+    # Without this, the editor would show cached data from previous scoring attempts
+    if st.session_state.mapping_config:
+        config = st.session_state.mapping_config
+        result_signature = f"{len(result)}_{config.get('scoring_method', 'default')}_{config.get('l1_weight', 1)}_{config.get('l2_weight', 3)}_{config.get('l3_weight', 6)}_{config.get('examples_weight', 2)}"
+    else:
+        result_signature = f"{len(result)}_default"
+    editor_key = f"mapping_editor_{abs(hash(result_signature)) % 10000}"
     
     # Update column config to hide less important columns
     for col in columns_to_hide:
@@ -278,6 +511,22 @@ if st.session_state.mapping_results is not None:
     
     # Always update session state with current edits
     st.session_state.edited_results = edited_result.copy()
+    
+    # Robust Excel export: Handle missing dependencies gracefully
+    # Provides fallback to openpyxl if xlsxwriter is not available
+    # This ensures users can always download results even with partial dependencies
+    try:
+        xls_bytes = to_xlsx_bytes(edited_result)
+        st.download_button(
+            "⬇️ Download Augmented XLSX (with your edits)",
+            data=xls_bytes,
+            file_name=f"range_taxonomy_{retailer_name}_mapping_edited.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    except ImportError:
+        st.warning("⚠️ Excel download requires xlsxwriter: `pip install xlsxwriter`")
+    except Exception as e:
+        st.error(f"❌ Download error: {e}")
     
     # Add a manual save button for better control
     if st.button("💾 Apply Changes", help="Manually save your current edits"):
@@ -323,38 +572,8 @@ if st.session_state.mapping_results is not None:
         - Use the progress bar to track your review completion
         """)
 
-    def to_xlsx_bytes(df: pd.DataFrame) -> bytes:
-        """
-        Convert a pandas DataFrame to Excel file bytes for download.
-        
-        Creates an in-memory Excel file from the DataFrame using xlsxwriter engine
-        and returns the binary content for Streamlit download functionality.
-        
-        Args:
-            df (pd.DataFrame): DataFrame to convert to Excel format
-            
-        Returns:
-            bytes: Binary content of the Excel file ready for download
-            
-        Example:
-            >>> df = pd.DataFrame({'A': [1, 2], 'B': [3, 4]})
-            >>> excel_bytes = to_xlsx_bytes(df)
-            >>> st.download_button("Download", excel_bytes, "file.xlsx")
-        """
-        import io
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-            df.to_excel(writer, index=False, sheet_name="mapping")
-        return output.getvalue()
 
-    # Use edited results for download
-    xls_bytes = to_xlsx_bytes(edited_result)
-    st.download_button(
-        "⬇️ Download Augmented XLSX (with your edits)",
-        data=xls_bytes,
-        file_name=f"range_taxonomy_{retailer_name}_mapping_edited.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+
 
     # Check if there are any changes from original
     if 'human_label' in result.columns and 'human_label' in edited_result.columns:

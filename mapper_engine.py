@@ -25,6 +25,12 @@ try:
 except ImportError:
     EMBEDDINGS_AVAILABLE = False
 
+try:
+    from rank_bm25 import BM25Okapi
+    BM25_AVAILABLE = True
+except ImportError:
+    BM25_AVAILABLE = False
+
 # Generic terms that should be filtered out as they don't provide meaningful mapping signals
 GENERIC_TERMS = {
     "shop all", "collections", "new", "sale", "offers", "furniture",
@@ -44,7 +50,11 @@ class MapperConfig:
         min_keep (float): Minimum score threshold for keeping the best match (0.25 = 25% similarity)
         verify_urls (bool): Whether to verify URLs are accessible via HTTP requests
         request_timeout (float): Timeout in seconds for HTTP requests
-        scoring_method (str): Scoring method to use - 'tfidf' or 'embeddings'
+        scoring_method (str): Scoring method - 'tfidf', 'bm25', 'tfidf_advanced', 'embeddings'
+        l1_weight (int): Weight multiplier for L1 (broad) categories
+        l2_weight (int): Weight multiplier for L2 (mid-level) categories  
+        l3_weight (int): Weight multiplier for L3 (specific) categories
+        examples_weight (int): Weight multiplier for Examples column
     """
     retailer_name: str
     retailer_domain: Optional[str] = None
@@ -54,6 +64,10 @@ class MapperConfig:
     verify_urls: bool = False
     request_timeout: float = 6.0
     scoring_method: str = 'tfidf'
+    l1_weight: int = 1
+    l2_weight: int = 3
+    l3_weight: int = 6
+    examples_weight: int = 2
 
 def norm_text(s: str) -> str:
     """
@@ -188,31 +202,47 @@ def canonicalize(s: str, synonyms: Dict[str, List[str]]) -> str:
         st = re.sub(rf"\b{re.escape(syn)}\b", canon, st)
     return st
 
-def build_docs_ikea(row: pd.Series, synonyms: Dict[str, List[str]]) -> str:
+def build_docs_ikea(row: pd.Series, synonyms: Dict[str, List[str]], 
+                   l1_weight: int = 1, l2_weight: int = 3, l3_weight: int = 6, examples_weight: int = 2) -> str:
     """
-    Build a weighted document string from IKEA taxonomy row for TF-IDF matching.
-    L3 terms are weighted most heavily (6x), L2 moderately (3x), L1 least (1x).
+    Build a weighted document string from IKEA taxonomy row for similarity matching.
+    Uses configurable weights for different taxonomy levels and examples.
     
     Args:
         row (pd.Series): IKEA taxonomy row with L1, L2, L3 columns
         synonyms (Dict[str, List[str]]): Synonym dictionary for canonicalization
+        l1_weight (int): Weight multiplier for L1 (broad) categories
+        l2_weight (int): Weight multiplier for L2 (mid-level) categories
+        l3_weight (int): Weight multiplier for L3 (specific) categories
+        examples_weight (int): Weight multiplier for Examples column
         
     Returns:
         str: Weighted document string for similarity matching
         
     Example:
-        For row with L1="Furniture", L2="Seating", L3="Sofas":
-        Returns: "sofas sofas sofas sofas sofas sofas seating seating seating furniture"
+        For row with L1="Furniture", L2="Seating", L3="Sofas", weights (1,3,6,2):
+        Returns: "sofas sofas sofas sofas sofas sofas seating seating seating furniture examples examples"
     """
     L1 = strip_numeric_prefix(row["L1"]) if "L1" in row else strip_numeric_prefix(row[0])
     L2 = strip_numeric_prefix(row["L2"]) if "L2" in row else strip_numeric_prefix(row[1])
     L3 = strip_numeric_prefix(row["L3"]) if "L3" in row else strip_numeric_prefix(row[2])
     ex = str(row.get("Examples", ""))
+    
     l1 = canonicalize(L1, synonyms)
     l2 = canonicalize(L2, synonyms)
     l3 = canonicalize(L3, synonyms)
-    # Weight L3 heavily (6x), L2 moderately (3x), L1 lightly (1x)
-    doc = " ".join(([l3] * 6) + ([l2] * 3) + ([l1] * 1) + ([canonicalize(ex, synonyms)] if ex else []))
+    
+    # Build weighted document with configurable weights
+    doc_parts = []
+    doc_parts.extend([l3] * l3_weight)
+    doc_parts.extend([l2] * l2_weight) 
+    doc_parts.extend([l1] * l1_weight)
+    
+    if ex:
+        ex_canonical = canonicalize(ex, synonyms)
+        doc_parts.extend([ex_canonical] * examples_weight)
+    
+    doc = " ".join(doc_parts)
     return norm_text(doc)
 
 async def verify_url_async(client: httpx.AsyncClient, url: str) -> bool:
@@ -326,8 +356,31 @@ class CatalogMapper:
             # Use semantic embeddings
             embeddings = self.embedding_model.encode(ret_docs.tolist())
             return self.embedding_model, embeddings
+        
+        elif self.cfg.scoring_method == 'bm25':
+            # Use BM25 scoring
+            if not BM25_AVAILABLE:
+                raise ImportError("rank-bm25 is required for BM25 scoring. Install with: pip install rank-bm25")
+            tokenized_docs = [doc.split() for doc in ret_docs]
+            bm25 = BM25Okapi(tokenized_docs)
+            return bm25, tokenized_docs
+        
+        elif self.cfg.scoring_method == 'tfidf_advanced':
+            # Use advanced TF-IDF with better parameters
+            vec = TfidfVectorizer(
+                ngram_range=(1, 3),      # Include 3-grams for better phrase matching
+                max_features=10000,      # Limit vocabulary size  
+                sublinear_tf=True,       # Logarithmic term frequency scaling
+                norm='l2',               # L2 normalization
+                smooth_idf=True,         # Add smoothing to IDF
+                min_df=1,               # Keep rare terms
+                max_df=0.95             # Remove very common terms
+            )
+            X = vec.fit_transform(ret_docs)
+            return vec, X
+        
         else:
-            # Use TF-IDF (default)
+            # Use standard TF-IDF (default)
             vec = TfidfVectorizer(ngram_range=(1, 2), min_df=1)
             X = vec.fit_transform(ret_docs)
             return vec, X
@@ -436,14 +489,25 @@ class CatalogMapper:
                 out_rows.append(self._emit(i, cat_path, url, 1.0, "override", url_source=("file" if url else "blank")))
                 continue
 
-            ikea_doc = build_docs_ikea(row, self.synonyms)
+            # Build IKEA document with configurable weights
+            ikea_doc = build_docs_ikea(
+                row, self.synonyms, 
+                self.cfg.l1_weight, self.cfg.l2_weight, 
+                self.cfg.l3_weight, self.cfg.examples_weight
+            )
             
             if self.cfg.scoring_method == 'embeddings':
                 # Use semantic embeddings
                 ikea_embedding = vec.encode([ikea_doc])
                 sims = cosine_similarity(ikea_embedding, Xret)[0]
+            
+            elif self.cfg.scoring_method == 'bm25':
+                # Use BM25 scoring
+                ikea_tokens = ikea_doc.split()
+                sims = np.array(vec.get_scores(ikea_tokens))
+                
             else:
-                # Use TF-IDF
+                # Use TF-IDF (standard or advanced)
                 qv = vec.transform([ikea_doc])
                 sims = cosine_similarity(qv, Xret)[0]
                 
