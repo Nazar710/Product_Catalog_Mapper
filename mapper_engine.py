@@ -1,4 +1,3 @@
-
 """
 Product Catalog Mapper Engine
 
@@ -174,6 +173,8 @@ def detect_room(l1: str) -> str:
     if "office" in t: return "office"
     if "rug" in t: return "rugs"
     if "light" in t: return "lighting"
+    # Add media/entertainment detection
+    if "media" in t or "tv" in t or "entertainment" in t or "storage" in t: return "living"
     return ""
 
 def canonicalize(s: str, synonyms: Dict[str, List[str]]) -> str:
@@ -324,22 +325,52 @@ class CatalogMapper:
         """
         Prepare retailer catalog data for similarity matching.
         Extracts path components, normalizes leaf categories, builds document strings.
-        
-        Args:
-            df_retail (pd.DataFrame): Raw retailer catalog with Name and Url columns
-            
-        Returns:
-            pd.DataFrame: Processed retailer data with additional columns:
-                - parts: List of path components
-                - leaf: Last path component (most specific category)
-                - leaf_norm: Canonicalized leaf category
-                - doc_norm: Normalized document string for matching
         """
         df = df_retail.copy()
-        df["parts"] = df["Name"].apply(split_path)
+        
+        # Check if retailer data has multiple columns (path segments) or single Name column
+        if 'Name' in df.columns:
+            # Single column with "Level1 > Level2 > Level3" format
+            df["parts"] = df["Name"].apply(split_path)
+            df["full_path"] = df["Name"].copy()
+        else:
+            # Multiple columns - handle ALL columns, not just first 3
+            # Find URL column and exclude it from path columns
+            url_cols = [col for col in df.columns if col.lower() in ['url', 'urls', 'link', 'links']]
+            path_cols = [col for col in df.columns if col not in url_cols]
+            
+            # Create full hierarchical path by combining non-empty segments
+            def build_full_path(row):
+                segments = []
+                for col in path_cols:
+                    val = str(row[col]).strip() if pd.notna(row[col]) else ""
+                    if val and val.lower() != 'nan':
+                        segments.append(val)
+                return " > ".join(segments)
+            
+            df["full_path"] = df.apply(build_full_path, axis=1)
+            df["parts"] = df["full_path"].apply(split_path)
+        
         df["leaf"] = df["parts"].apply(lambda xs: xs[-1] if xs else "")
         df["leaf_norm"] = df["leaf"].apply(lambda s: canonicalize(s, self.synonyms))
-        df["doc_norm"] = df.apply(lambda r: norm_text(" ".join([r["leaf_norm"], *r["parts"]])), axis=1)
+        
+        # Apply weighted document building similar to IKEA side
+        def build_weighted_retail_doc(row):
+            parts = row["parts"]
+            if not parts:
+                return ""
+            
+            # Apply weights: more specific levels get higher weights
+            weighted_terms = []
+            for i, part in enumerate(reversed(parts)):  # Start from most specific
+                weight = max(1, len(parts) - i)  # Most specific gets highest weight
+                canonical_part = canonicalize(part, self.synonyms)
+                weighted_terms.extend([canonical_part] * weight)
+            
+            return norm_text(" ".join(weighted_terms))
+        
+        df["doc_norm"] = df.apply(build_weighted_retail_doc, axis=1)
+        
         return df
 
     def _vectorize(self, ret_docs: pd.Series):
@@ -524,15 +555,28 @@ class CatalogMapper:
             for j, sc in enumerate(sims_masked):
                 if sc < 0: continue
                 if sc >= max(self.cfg.min_score, best * self.cfg.one_to_many_ratio):
-                    if not looks_generic(retail.loc[j, "Name"]) and not self._is_blacklisted(retail.loc[j, "Name"]):
+                    # Get the full path for both display and blacklist checking
+                    full_path = retail.loc[j, "full_path"] if "full_path" in retail.columns else retail.loc[j, "Name"]
+                    ikea_context = f"{row['L1']} {row['L2']} {row['L3']}"
+                    
+                    if not looks_generic(full_path) and not self._is_blacklisted(full_path, ikea_context):
                         keep.append((j, float(sc)))
 
             if not keep:
                 jbest = int(np.nanargmax(sims_masked))
+                # Add additional validation for fallback matches to prevent garbage mappings
+                if best < 0.15:  # Very low similarity threshold for garbage detection
+                    out_rows.append(self._emit(i, "", "", 0.0, "low-confidence", url_source="blank"))
+                    continue
                 keep = [(jbest, best)]
 
+            # Cap one-to-many results to maximum 3 matches
+            keep = sorted(keep, key=lambda x: x[1], reverse=True)[:3]
+
             for j, sc in keep:
-                out_rows.append(self._emit(i, retail.loc[j, "Name"], retail.loc[j, "Url"], sc, "cosine", url_source="file"))
+                # Use full_path which now contains the complete hierarchical path
+                full_path_val = retail.loc[j, "full_path"]
+                out_rows.append(self._emit(i, full_path_val, retail.loc[j, "Url"], sc, "cosine", url_source="file"))
 
         out = pd.DataFrame(out_rows)
 
@@ -552,21 +596,26 @@ class CatalogMapper:
 
         base = work[base_cols].copy()
         base["_row"] = np.arange(len(base))
+        
+        # Ensure ALL IKEA rows are included - use LEFT join instead of RIGHT join
         out["_row"] = out["_row"].astype(int)
-        merged = base.merge(out, left_on="_row", right_on="_row", how="right").drop(columns=["_row"])
+        merged = base.merge(out, left_on="_row", right_on="_row", how="left").drop(columns=["_row"])
+        
+        # Fill missing values for rows that didn't get any matches
+        merged[f"{self.cfg.retailer_name}_catalog_path"] = merged.pop("_path").fillna("")
+        merged[f"{self.cfg.retailer_name}_url"] = merged.pop("_url").fillna("")
+        merged[f"{self.cfg.retailer_name}_score"] = merged.pop("_score").fillna(0.0)
+        merged[f"{self.cfg.retailer_name}_method"] = merged.pop("_method").fillna("no-match")
 
-        merged[f"{self.cfg.retailer_name}_catalog_path"] = merged.pop("_path")
-        merged[f"{self.cfg.retailer_name}_url"] = merged.pop("_url")
-        merged[f"{self.cfg.retailer_name}_score"] = merged.pop("_score")
-        merged[f"{self.cfg.retailer_name}_method"] = merged.pop("_method")
         return merged
 
-    def _is_blacklisted(self, path: str) -> bool:
+    def _is_blacklisted(self, path: str, ikea_context: str = "") -> bool:
         """
         Check if a retailer category path should be filtered out due to generic terms.
         
         Args:
             path (str): Retailer category path to check
+            ikea_context (str): IKEA category context for semantic filtering
             
         Returns:
             bool: True if path contains generic terms and should be filtered
@@ -574,6 +623,13 @@ class CatalogMapper:
         p = norm_text(path)
         parts = split_path(path)
         leaf = parts[-1].lower() if parts else ""
+        
+        # Add semantic filtering to prevent obviously wrong mappings
+        # Only apply semantic filtering if IKEA context suggests media/TV furniture
+        if ikea_context and any(term in norm_text(ikea_context) for term in ["media", "tv", "entertainment"]):
+            if any(term in p for term in ["bedroom", "bed", "mattress", "bedding"]):
+                return True
+            
         return (leaf in self.generic_terms) or (p in self.generic_terms)
 
     def _emit(self, idx: int, path: str, url: str, score: float, method: str, url_source: str = "file") -> Dict:
@@ -601,3 +657,4 @@ class CatalogMapper:
             "_method": method,
             "matched_tokens": inter,
         }
+
